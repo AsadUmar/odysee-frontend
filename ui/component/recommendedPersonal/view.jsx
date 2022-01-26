@@ -6,6 +6,10 @@ import ClaimList from 'component/claimList';
 import * as ICONS from 'constants/icons';
 import { useIsLargeScreen } from 'effects/use-screensize';
 
+// TODO: recsysFyp will be moved into 'RecSys', so the redux import in a jsx
+// violation is just temporary.
+import { recsysFyp } from 'redux/actions/search';
+
 // ****************************************************************************
 // SectionHeader (TODO: DRY)
 // ****************************************************************************
@@ -41,13 +45,15 @@ function getSuitablePageSizeForScreen(defaultSize, isLargeScreen) {
 
 type Props = {
   onLoad: (displayed: boolean) => void,
+  // --- redux ---
+  userId: ?string,
   personalRecommendations: { gid: string, uris: Array<string> },
   doFetchPersonalRecommendations: () => void,
 };
 
 export default function RecommendedPersonal(props: Props) {
-  const { onLoad, personalRecommendations, doFetchPersonalRecommendations } = props;
-
+  const { onLoad, userId, personalRecommendations, doFetchPersonalRecommendations } = props;
+  const [markedGid, setMarkedGid] = React.useState('');
   const [view, setView] = React.useState(VIEW.ALL_VISIBLE);
   const isLargeScreen = useIsLargeScreen();
 
@@ -75,9 +81,18 @@ export default function RecommendedPersonal(props: Props) {
     }
   }, [count, countCollapsed, view, setView]);
 
+  // Mark recommendations when rendered:
+  React.useEffect(() => {
+    if (userId && markedGid !== personalRecommendations.gid) {
+      setMarkedGid(personalRecommendations.gid);
+      recsysFyp.markPersonalRecommendations(userId, personalRecommendations.gid);
+    }
+  }, [userId, markedGid, personalRecommendations.gid]);
+
+  // Fetch on mount:
   React.useEffect(() => {
     doFetchPersonalRecommendations();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return count > 0 ? (
     <>
