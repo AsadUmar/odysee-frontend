@@ -1,4 +1,5 @@
 import { connect } from 'react-redux';
+import { withRouter } from 'react-router';
 import { makeSelectClaimForUri, makeSelectMetadataForUri } from 'redux/selectors/claims';
 import { doFetchRecommendedContent } from 'redux/actions/search';
 import { selectRecommendedContentForUri, selectIsSearching } from 'redux/selectors/search';
@@ -10,7 +11,7 @@ const select = (state, props) => {
   const { claim_id: claimId } = claim;
   const recommendedContentUris = selectRecommendedContentForUri(state, props.uri);
   const nextRecommendedUri = recommendedContentUris && recommendedContentUris[0];
-  const metadata =  makeSelectMetadataForUri(props.uri)(state);
+  const metadata = makeSelectMetadataForUri(props.uri)(state);
 
   return {
     claim,
@@ -23,4 +24,4 @@ const select = (state, props) => {
   };
 };
 
-export default connect(select, { doFetchRecommendedContent })(RecommendedContent);
+export default withRouter(connect(select, { doFetchRecommendedContent })(RecommendedContent));
