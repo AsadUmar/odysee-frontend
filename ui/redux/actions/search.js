@@ -1,16 +1,60 @@
 // @flow
 import * as ACTIONS from 'constants/action_types';
+import { doToast } from 'redux/actions/notifications';
 import { selectShowMatureContent } from 'redux/selectors/settings';
-import { selectClaimForUri, selectClaimIsNsfwForUri } from 'redux/selectors/claims';
+import { selectClaimForUri, selectClaimIdForUri, selectClaimIsNsfwForUri } from 'redux/selectors/claims';
 import { doResolveUris } from 'redux/actions/claims';
 import { buildURI, isURIValid } from 'util/lbryURI';
 import { batchActions } from 'util/batch-actions';
-import { makeSelectSearchUrisForQuery, selectSearchValue } from 'redux/selectors/search';
+import { makeSelectSearchUrisForQuery, selectPersonalRecommendations, selectSearchValue } from 'redux/selectors/search';
+import { selectUser } from 'redux/selectors/user';
 import handleFetchResponse from 'util/handle-fetch';
 import { getSearchQueryString } from 'util/query-params';
 import { getRecommendationSearchOptions } from 'util/search';
 import { SEARCH_SERVER_API, SEARCH_SERVER_API_ALT } from 'config';
 import { SEARCH_OPTIONS } from 'constants/search';
+
+// ****************************************************************************
+// FYP
+// ****************************************************************************
+// TODO: This should be part of `extras/recsys/recsys`, but due to the circular
+// dependency problem with `extras`, I'm temporarily placing it. The recsys
+// object should be moved into `ui`, but that change will require more testing.
+
+const recsysFyp = {
+  fetchPersonalRecommendations: (userId: string) => {
+    return fetch(`https://recsys.odysee.com/v1/u/${userId}/fyp`)
+      .then((response) => response.json())
+      .then((result) => result)
+      .catch((error) => {
+        console.log('fyp error:', error);
+        return {};
+      });
+  },
+
+  markPersonalRecommendations: (userId: string, gid: string) => {
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(`https://recsys.odysee.com/v1/u/${userId}/fyp/${gid}/mark`);
+      }
+    } catch (error) {
+      console.log('FYP:', error);
+    }
+  },
+
+  ignoreRecommendation: (userId: string, gid: string, claimId: string) => {
+    return fetch(`https://recsys.odysee.com/v1/u/${userId}/fyp/${gid}/c/${claimId}/ignore`, { method: 'POST' })
+      .then((response) => response.json())
+      .then((result) => result)
+      .catch((error) => {
+        console.log('FYP:', error);
+        return {};
+      });
+  },
+};
+
+// ****************************************************************************
+// ****************************************************************************
 
 type Dispatch = (action: any) => any;
 type GetState = () => { claims: any, search: SearchState };
@@ -21,6 +65,8 @@ type SearchOptions = {
   related_to?: string,
   nsfw?: boolean,
   isBackgroundSearch?: boolean,
+  gid?: string, // for fyp only
+  uuid?: string, // for fyp only
 };
 
 let lighthouse = {
@@ -44,6 +90,36 @@ export const setSearchApi = (endpoint: string) => {
 
 export const setSearchUserId = (userId: ?string) => {
   lighthouse.user_id = userId ? `&user_id=${userId}` : '';
+};
+
+/**
+ * Processes a lighthouse-formatted search result to an array of uris.
+ * @param results
+ */
+const processLighthouseResults = (results: Array<any>) => {
+  const uris = [];
+
+  results.forEach((item) => {
+    if (item) {
+      const { name, claimId } = item;
+      const urlObj: LbryUrlObj = {};
+
+      if (name.startsWith('@')) {
+        urlObj.channelName = name;
+        urlObj.channelClaimId = claimId;
+      } else {
+        urlObj.streamName = name;
+        urlObj.streamClaimId = claimId;
+      }
+
+      const url = buildURI(urlObj);
+      if (isURIValid(url)) {
+        uris.push(url);
+      }
+    }
+  });
+
+  return uris;
 };
 
 export const doSearch = (rawQuery: string, searchOptions: SearchOptions) => (
@@ -85,31 +161,10 @@ export const doSearch = (rawQuery: string, searchOptions: SearchOptions) => (
   cmd(queryWithOptions)
     .then((data: { body: Array<{ name: string, claimId: string }>, poweredBy: string }) => {
       const { body: result, poweredBy } = data;
-      const uris = [];
+      const uris = processLighthouseResults(result);
+
       const actions = [];
-
-      result.forEach((item) => {
-        if (item) {
-          const { name, claimId } = item;
-          const urlObj: LbryUrlObj = {};
-
-          if (name.startsWith('@')) {
-            urlObj.channelName = name;
-            urlObj.channelClaimId = claimId;
-          } else {
-            urlObj.streamName = name;
-            urlObj.streamClaimId = claimId;
-          }
-
-          const url = buildURI(urlObj);
-          if (isURIValid(url)) {
-            uris.push(url);
-          }
-        }
-      });
-
       actions.push(doResolveUris(uris));
-
       actions.push({
         type: ACTIONS.SEARCH_SUCCESS,
         data: {
@@ -120,6 +175,7 @@ export const doSearch = (rawQuery: string, searchOptions: SearchOptions) => (
           recsys: poweredBy,
         },
       });
+
       dispatch(batchActions(...actions));
     })
     .catch(() => {
@@ -154,7 +210,10 @@ export const doSetMentionSearchResults = (query: string, uris: Array<string>) =>
   });
 };
 
-export const doFetchRecommendedContent = (uri: string) => (dispatch: Dispatch, getState: GetState) => {
+export const doFetchRecommendedContent = (uri: string, fyp: ?FypParam = null) => (
+  dispatch: Dispatch,
+  getState: GetState
+) => {
   const state = getState();
   const claim = selectClaimForUri(state, uri);
   const matureEnabled = selectShowMatureContent(state);
@@ -162,6 +221,12 @@ export const doFetchRecommendedContent = (uri: string) => (dispatch: Dispatch, g
 
   if (claim && claim.value && claim.claim_id) {
     const options: SearchOptions = getRecommendationSearchOptions(matureEnabled, claimIsMature, claim.claim_id);
+
+    if (fyp) {
+      options['gid'] = fyp.gid;
+      options['uuid'] = fyp.uuid;
+    }
+
     const { title } = claim.value;
 
     if (title && options) {
@@ -170,4 +235,55 @@ export const doFetchRecommendedContent = (uri: string) => (dispatch: Dispatch, g
   }
 };
 
-export { lighthouse };
+export const doFetchPersonalRecommendations = () => (dispatch: Dispatch, getState: GetState) => {
+  const state = getState();
+  const user = selectUser(state);
+
+  if (!user || !user.id) {
+    dispatch({ type: ACTIONS.FYP_FETCH_FAILED });
+    return;
+  }
+
+  recsysFyp
+    .fetchPersonalRecommendations(user.id)
+    .then((data) => {
+      const { gid, recs } = data;
+      if (gid && recs) {
+        dispatch({
+          type: ACTIONS.FYP_FETCH_SUCCESS,
+          data: {
+            gid,
+            uris: processLighthouseResults(recs),
+          },
+        });
+      } else {
+        dispatch({ type: ACTIONS.FYP_FETCH_FAILED });
+      }
+    })
+    .catch(() => {
+      dispatch({ type: ACTIONS.FYP_FETCH_FAILED });
+    });
+};
+
+export const doRemovePersonalRecommendation = (uri: string) => (dispatch: Dispatch, getState: GetState) => {
+  const state = getState();
+  const user = selectUser(state);
+  const personalRecommendations = selectPersonalRecommendations(state);
+  const claimId = selectClaimIdForUri(state, uri);
+
+  if (!user || !user.id || !personalRecommendations.gid || !claimId) {
+    return;
+  }
+
+  recsysFyp
+    .ignoreRecommendation(user.id, personalRecommendations.gid, claimId)
+    .then((res) => {
+      dispatch({ type: ACTIONS.FYP_HIDE_URI, data: { uri } });
+      dispatch(doToast({ message: __('Recommendation removed. Thanks for the feedback!') }));
+    })
+    .catch((err) => {
+      console.log('doRemovePersonalRecommendation:', err);
+    });
+};
+
+export { lighthouse, recsysFyp };
